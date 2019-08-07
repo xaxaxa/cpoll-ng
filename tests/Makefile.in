@@ -1,0 +1,20 @@
+CXX = @CXX@ @CXXFLAGS@ -I../include --std=c++0x -fPIC -fwrapv -fno-delete-null-pointer-checks -funsigned-char -fno-strict-aliasing -Wno-pmf-conversions -Iinclude
+LDFLAGS := @LDFLAGS@ -lpthread
+CPOLL_DIR := ..
+
+all: basictests
+
+$(CPOLL_DIR)/libcpoll-ng.so: FORCE
+	$(MAKE) -C $(CPOLL_DIR) libcpoll-ng.so
+
+FORCE:
+
+%.o: %.C
+	$(CXX) -c $(CC_FLAGS) $< -o $@
+
+basictests: basictests.o $(CPOLL_DIR)/libcpoll-ng.so
+	$(CXX) -o $@ $^ $(LDFLAGS)
+
+
+clean:
+	rm -f *.o basictests
