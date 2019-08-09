@@ -35,6 +35,7 @@ int main(int argc, char** argv)
 			char buf1[bufSize];	//local -> remote
 			char buf2[bufSize]; //remote -> local
 			bool rev;
+			bool stopped1_2 = false, stopped2_1 = false;
 			handler(conf& cfg, int sock)
 				:cfg(cfg), s(sock), s2(AF_INET,SOCK_STREAM,0) {
 			}
@@ -67,14 +68,21 @@ int main(int argc, char** argv)
 			}
 			void read1cb(int r) {
 				if(r<=0) {
-					s2.close([this](int r) { closed(r); });
+					s2.shutdown(SHUT_WR);
+					stopped1_2 = true;
+					if(stopped2_1) stop();
 					return;
 				}
 				transform((uint8_t*)buf1,r);
 				write1(r);
 			}
 			void read2cb(int r) {
-				if(r<=0) { s.close([this](int r) { closed(r); }); return; }
+				if(r<=0) {
+					s.shutdown(SHUT_WR);
+					stopped2_1 = true;
+					if(stopped1_2) stop();
+					return;
+				}
 				transform((uint8_t*)buf2,r);
 				write2(r);
 			}
