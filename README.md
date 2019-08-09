@@ -83,3 +83,39 @@ public:
 };
 }
 ```
+
+## EPoll
+This class implements a epoll(7) based asynchronous I/O event loop. To perform any asynchronous I/O on a `File` you must register it with an `EPoll` instance using add() and call `EPoll::loop()`.
+
+```c++
+namespace CP {
+class EPoll: FD {
+public:
+	// creates a epoll descriptor
+	EPoll();
+
+	// closes the epoll descriptor
+	~EPoll();
+
+	// add a file descriptor to epoll; this will register level triggered
+	// event monitoring for both read and write, and upon events received
+	// the FD's dispatch() function will be called with returned events
+	// (EPOLLIN, EPOLLOUT, etc).
+	// this function does not take ownership of fd, and the user must guarantee
+	// fd exists until after it is removed from epoll using remove().
+	void add(FD& fd);
+
+	// immediately removes fd from epoll and cancels any outstanding event
+	// notifications. After calling remove() you may delete fd.
+	void remove(FD& fd);
+
+	// run a single invocation of epoll_wait and dispatch events.
+	// set timeoutMs to -1 to wait indefinitely.
+	void run(int timeoutMs);
+
+	// main event loop; calls run() with infinite timeout in a loop.
+	void loop();
+};
+}
+```
+
