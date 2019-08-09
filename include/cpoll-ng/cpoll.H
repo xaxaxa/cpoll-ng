@@ -107,7 +107,7 @@ namespace CP
 	enum class Operations: uint8_t {
 		none = 0,
 		read = 1, write, send, recv, readv, writev, sendFileFrom,
-		readAll, writeAll, sendAll, recvAll,
+		readAll, writeAll, sendAll, recvAll, readvAll, writevAll,
 		sendTo, recvFrom,
 		accept, connect, close, lastItem
 	};
@@ -136,6 +136,9 @@ namespace CP
 				iovec* iov;
 				int iovcnt;
 				int lenTotal;
+
+				// for readvAll/writevAll
+				int lenDone;
 			} readWriteV;
 
 			struct {
@@ -170,7 +173,11 @@ namespace CP
 		FD& operator=(const FD& other) = delete;
 		void init(int fd);
 
-		virtual void dispatch(int events)=0;
+		// the pass-by-reference here is important; because dispatch()
+		// may call user callbacks, and the user may alter epoll status
+		// (e.g. deregister fd from epoll), during dispatch() "events"
+		// may change.
+		virtual void dispatch(int& events)=0;
 
 		void setBlocking(bool b) {
 			int f = fcntl(fd, F_GETFL);
@@ -200,10 +207,12 @@ namespace CP
 		// opens a file using open(2) and sets it to nonblocking mode.
 		File(const char* name, int flags, int perms = 0);
 
+		// closes the file descriptor
 		~File();
 
-		// the following functions are all nonblocking and will return an error
-		// if the operation would block.
+		// The following functions are equivalent to the POSIX functions with
+		// the same name. These functions should be assumed to always be nonblocking
+		// because the constructors always set nonblocking mode on all file descriptors.
 		int32_t read(void* buf, int32_t len);
 		int32_t readv(iovec* iov, int iovcnt);
 		int32_t write(const void* buf, int32_t len);
@@ -212,28 +221,48 @@ namespace CP
 		int32_t recv(void* buf, int32_t len, int32_t flags = 0);
 
 
-		// async functions
+		// async functions: these perform the same operation as the POSIX
+		// functions with the same name, while passing the return value (int)
+		// to the callback cb and setting errno to the error returned by the OS.
+
+		// if repeat is set to true, the operation will be repeated with
+		// the same arguments until an error or EOF condition happens.
+		// The callback will be called once for each attempt.
 
 		void read(void* buf, int32_t len, const Callback& cb, bool repeat = false);
 		void readv(iovec* iov, int iovcnt, const Callback& cb, bool repeat = false);
-		void readAll(void* buf, int32_t len, const Callback& cb);
-
 		void write(const void* buf, int32_t len, const Callback& cb, bool repeat = false);
 		void writev(iovec* iov, int iovcnt, const Callback& cb, bool repeat = false);
+
+		// similar to read/write, except these will attempt to fully read/write the buffer
+		// or until an error or EOF condition is encountered, in which case the callback
+		// is called with the number of bytes read/written so far
+		// (or -1 if an error occurred on the first attempt).
+		void readAll(void* buf, int32_t len, const Callback& cb);
 		void writeAll(const void* buf, int32_t len, const Callback& cb);
 
+		void readvAll(iovec* iov, int iovcnt, const Callback& cb);
+		void writevAll(iovec* iov, int iovcnt, const Callback& cb);
+
+		// functionally identical to read/write/readAll/writeAll, but uses
+		// the send/recv syscalls.
 		void recv(void* buf, int32_t len, int32_t flags, const Callback& cb, bool repeat = false);
+		void send(const void* buf, int32_t len, int32_t flags, const Callback& cb, bool repeat = false);
+		void recvAll(void* buf, int32_t len, int32_t flags, const Callback& cb);
+		void sendAll(const void* buf, int32_t len, int32_t flags, const Callback& cb);
+
+		inline void repeatRead(void* buf, int32_t len, const Callback& cb) {
+			read(buf, len, cb, true);
+		}
+		inline void repeatWrite(const void* buf, int32_t len, const Callback& cb) {
+			write(buf, len, cb, true);
+		}
 		inline void repeatRecv(void* buf, int32_t len, int32_t flags, const Callback& cb) {
 			recv(buf, len, flags, cb, true);
 		}
-		void recvAll(void* buf, int32_t len, int32_t flags, const Callback& cb);
-
-		void send(const void* buf, int32_t len, int32_t flags, const Callback& cb,
-				bool repeat = false);
 		inline void repeatSend(const void* buf, int32_t len, int32_t flags, const Callback& cb) {
 			send(buf, len, flags, cb, true);
 		}
-		void sendAll(const void* buf, int32_t len, int32_t flags, const Callback& cb);
 
 		// all integers representing on-disk offsets and lengths are 64 bit;
 		// integers representing in-memory offsets and lengths are 32 bit.
@@ -275,32 +304,36 @@ namespace CP
 
 		void handleHup(OperationInfo& op, bool isWrite);
 
-		void dispatch(int events) override;
+		void dispatch(int& events) override;
 	};
 	class EPoll: FD {
 	public:
+		// creates a epoll descriptor
 		EPoll();
+
+		// closes the epoll descriptor
 		~EPoll();
 
 		// add a file descriptor to epoll; this will register level triggered
 		// event monitoring for both read and write, and upon events received
-		// the FD's dispatch() function will be called with EPOLLIN/EPOLLOUT
-		// or a combination thereof.
+		// the FD's dispatch() function will be called with returned events
+		// (EPOLLIN, EPOLLOUT, etc).
 		// this function does not take ownership of fd, and the user must guarantee
 		// fd exists until after it is removed from epoll using remove().
 		void add(FD& fd);
 
-		// immediately remove fd from epoll and cancel any outstanding event
+		// immediately removes fd from epoll and cancels any outstanding event
 		// notifications. After calling remove() you may delete fd.
 		void remove(FD& fd);
 
-		// run a single invocation of epoll_wait and dispatch events
+		// run a single invocation of epoll_wait and dispatch events.
+		// set timeoutMs to -1 to wait indefinitely.
 		void run(int timeoutMs);
 
 		// main event loop; calls run() with infinite timeout in a loop.
 		void loop();
 
-		virtual void dispatch(int events) override;
+		virtual void dispatch(int& events) override;
 	protected:
 		static constexpr int EVENTSPERCYCLE = 32;
 		epoll_event currCycleNotifications[EVENTSPERCYCLE];
@@ -335,7 +368,7 @@ namespace CP
 		//initsock is called right after creating the socket; you can use it to set socket options
 		//such as SO_REUSEPORT that need to be set before binding
 		void bind(const char* hostname, const char* port, int32_t family = AF_UNSPEC,
-				int32_t socktype = SOCK_STREAM, int32_t proto = 0, int32_t flags = 0);
+				int32_t socktype = SOCK_STREAM, int32_t proto = 0, bool reusePort = true);
 
 		void listen(int32_t backlog = 16);
 		int accept();
@@ -372,7 +405,31 @@ namespace CP
 		// performs the operation specified in op.
 		OperationResult doOperation(OperationInfo& op, bool isWrite, bool hup);
 		void handleHup(OperationInfo& op, bool isWrite);
-		void dispatch(int events) override;
+		void dispatch(int& events) override;
+	};
+	
+	class Timer: public FD
+	{
+	public:
+		Callback cb;
+		struct timespec interval;
+
+		//if interval is 0, timer is disabled.
+		// timer is always recurring (unless disabled)
+		void setInterval(struct timespec interval);
+		void setInterval(uint64_t interval_ms);
+		void init(int fd);
+		void init(struct timespec interval);
+		void init(uint64_t interval_ms = 0);
+		void close();
+		Timer(int fd);
+		Timer(uint64_t interval_ms = 0);
+		Timer(struct timespec interval);
+		~Timer();
+		struct timespec getInterval();
+		bool running();
+		void setCallback(const Callback& cb);
+		virtual void dispatch(int& events) override;
 	};
 
 

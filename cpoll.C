@@ -188,10 +188,10 @@ namespace CP
 		}
 
 		// (read/write/send/recv)All
-		if(op.operation >= Operations::readAll && op.operation <= Operations::recvAll) {
-			int myLen;
-		repeat2:
-			myLen = rwInfo.len - rwInfo.lenDone;
+		if(op.operation >= Operations::readAll && op.operation <= Operations::writevAll) {
+			// repeat is not supported for *All
+			assert(!op.repeat);
+			bool isrwv = (op.operation == Operations::readvAll || op.operation == Operations::writevAll);
 			switch(op.operation) {
 			case Operations::readAll:
 				r = read(rwInfo.buf + rwInfo.lenDone, rwInfo.len - rwInfo.lenDone);
@@ -205,32 +205,61 @@ namespace CP
 			case Operations::recvAll:
 				r = recv(rwInfo.buf + rwInfo.lenDone, rwInfo.len - rwInfo.lenDone, rwInfo.flags);
 				break;
+			case Operations::readvAll:
+				r = readv(rwVInfo.iov, rwVInfo.iovcnt);
+				break;
+			case Operations::writevAll:
+				r = writev(rwVInfo.iov, rwVInfo.iovcnt);
+				break;
 			default: assert(false);
 			}
 			if (r < 0 && isWouldBlock())
 				return CONTINUE;
 
+			int lenDone, lenTotal;
+			if(isrwv) {
+				lenDone = op.info.readWriteV.lenDone;
+				lenTotal = op.info.readWriteV.lenTotal;
+			} else {
+				lenDone = op.info.readWrite.lenDone;
+				lenTotal = op.info.readWrite.len;
+			}
+
 			// an error condition or eof happened
 			if (r <= 0) {
 				op.operation = Operations::none;
-				op.cb((rwInfo.lenDone == 0) ? r : rwInfo.lenDone);
+				op.cb((lenDone == 0) ? r : lenDone);
 				return DONE_PERMANENT;
 			}
 
 			// data was read/written
-			rwInfo.lenDone += r;
-			if (rwInfo.lenDone >= rwInfo.len || hup) {
+			lenDone += r;
+			if(isrwv) {
+				rwVInfo.lenDone += r;
+				// remove fully completed buffers from iov
+				while(rwVInfo.iovcnt > 0 && rwVInfo.iov[0].iov_len <= r) {
+					r -= rwVInfo.iov[0].iov_len;
+					rwVInfo.iov++;
+					rwVInfo.iovcnt--;
+				}
+				// add offset to first buffer
+				if(rwVInfo.iovcnt > 0) {
+					uint8_t* buf = (uint8_t*) rwVInfo.iov[0].iov_base;
+					rwVInfo.iov[0].iov_base = buf + r;
+					rwVInfo.iov[0].iov_len -= r;
+				}
+			} else {
+				rwInfo.lenDone += r;
+			}
+			// target or eof was reached
+			if (lenDone >= lenTotal || hup) {
 				if(!op.repeat) op.operation = Operations::none;
 				if (op.cb != nullptr)
-					op.cb(rwInfo.lenDone);
+					op.cb(lenDone);
 				return DONE;
 			}
 			// we did not reach target, no hup occurred, and the read was a short read
-			if(r < myLen) {
-				return CONTINUE;
-			}
-			// the read/write was a complete read, so we may still have readable data in the fd
-			goto repeat2;
+			return CONTINUE;
 		}
 
 		// others
@@ -264,9 +293,13 @@ namespace CP
 			op.cb(isWrite ? -1 : 0);
 		}
 	}
-	void File::dispatch(int events) {
-		bool err = (events & EPOLLERR);
-		bool hup = (events & EPOLLHUP);
+	void File::dispatch(int& events) {
+		// we can not define these as variables because "events" must be checked every time
+		// ("events" can change between doOperation calls because the user callback may
+		// cancel operations.
+#define err (events & EPOLLERR)
+#define hup (events & EPOLLHUP)
+
 		if((events & EPOLLIN)) {
 			doOperation(pendingOps[0], false, err || hup);
 		} else if(err || hup) {
@@ -277,6 +310,8 @@ namespace CP
 		} else if(err) {
 			handleHup(pendingOps[1], true);
 		}
+#undef err
+#undef hup
 	}
 
 	// for read/write/send/recv
@@ -440,7 +475,7 @@ namespace CP
 		pfd.fd = fd;
 		pfd.events = POLLOUT;
 		if(poll(&pfd, 1, 0) > 0) {
-			op.cb(close());
+			cb(close());
 		} else {
 			op.operation = Operations::close;
 			op.repeat = false;
@@ -489,6 +524,34 @@ namespace CP
 			op.repeat = repeat;
 			op.cb = cb;
 		}
+	}
+	void File::readvAll(iovec* iov, int iovcnt, const Callback& cb) {
+		OperationInfo& op = pendingOps[0];
+		op.operation = Operations::readvAll;
+		op.info.readWriteV.iov = iov;
+		op.info.readWriteV.iovcnt = iovcnt;
+		op.info.readWriteV.lenTotal = iovBytesTotal(iov, iovcnt);
+		op.info.readWriteV.lenDone = 0;
+		op.repeat = false;
+		op.cb = cb;
+		// we will get lazy here for now and just use doOperation() to
+		// do the synchronous attempt
+		if(!op.skipSynchronousAttempt)
+			doOperation(op, false, false);
+	}
+	void File::writevAll(iovec* iov, int iovcnt, const Callback& cb) {
+		OperationInfo& op = pendingOps[1];
+		op.operation = Operations::writevAll;
+		op.info.readWriteV.iov = iov;
+		op.info.readWriteV.iovcnt = iovcnt;
+		op.info.readWriteV.lenTotal = iovBytesTotal(iov, iovcnt);
+		op.info.readWriteV.lenDone = 0;
+		op.repeat = false;
+		op.cb = cb;
+		// we will get lazy here for now and just use doOperation() to
+		// do the synchronous attempt
+		if(!op.skipSynchronousAttempt)
+			doOperation(op, true, false);
 	}
 	void File::sendFileFrom(int fd, int64_t offset, int32_t len, const Callback& cb, bool repeat) {
 		OperationInfo& op = pendingOps[1];
@@ -600,9 +663,13 @@ namespace CP
 			break;
 		}
 	}
-	void Socket::dispatch(int events) {
-		bool err = (events & EPOLLERR);
-		bool hup = (events & EPOLLHUP);
+	void Socket::dispatch(int& events) {
+		// we can not define these as variables because "events" must be checked every time
+		// ("events" can change between doOperation calls because the user callback may
+		// cancel operations.
+#define err (events & EPOLLERR)
+#define hup (events & EPOLLHUP)
+
 		if((events & EPOLLIN)) {
 			doOperation(pendingOps[0], false, err || hup);
 		} else if(err || hup) {
@@ -613,6 +680,8 @@ namespace CP
 		} else if(err) {
 			handleHup(pendingOps[1], true);
 		}
+#undef err
+#undef hup
 	}
 	shared_ptr<EndPoint> Socket::getLocalEndPoint() const {
 		uint8_t addr[MAXSOCKADDRSIZE];
@@ -651,7 +720,7 @@ namespace CP
 		bind((sockaddr*) tmp, size);
 	}
 	void Socket::bind(const char* hostname, const char* port, int32_t family, int32_t socktype,
-			int32_t proto, int32_t flags) {
+			int32_t proto, bool reusePort) {
 		if (fd != -1) throw CPollException(
 				"Socket::bind(string, ...) creates a socket, but the socket is already initialized");
 		auto hosts = EndPoint::lookupHost(hostname, port, family, socktype, proto);
@@ -662,6 +731,8 @@ namespace CP
 
 			int32_t tmp12345 = 1;
 			setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &tmp12345, sizeof(tmp12345));
+			if(reusePort)
+				setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, &tmp12345, sizeof(tmp12345));
 
 			int size = hosts[i]->getSockAddrSize();
 			uint8_t tmp[size];
@@ -813,18 +884,15 @@ namespace CP
 	Events SignalFD::getEvents() {
 		return Events::in;
 	}
+*/
 
 //Timer
-	static void Timer_doinit(Timer* This) {
-		This->dispatching = false;
-		This->deletionFlag = NULL;
-	}
 	static void Timer_doSetInterval(Timer* This, struct timespec interval) {
 		This->interval = interval;
 		struct itimerspec tmp1;
 		tmp1.it_interval = interval;
 		tmp1.it_value = interval;
-		timerfd_settime(This->handle, 0, &tmp1, NULL);
+		timerfd_settime(This->fd, 0, &tmp1, NULL);
 	}
 	static void Timer_doSetInterval(Timer* This, uint64_t interval_ms) {
 		This->interval.tv_sec = interval_ms / 1000;
@@ -832,58 +900,35 @@ namespace CP
 		struct itimerspec tmp1;
 		tmp1.it_interval = This->interval;
 		tmp1.it_value = This->interval;
-		timerfd_settime(This->handle, 0, &tmp1, NULL);
+		timerfd_settime(This->fd, 0, &tmp1, NULL);
 	}
 	void Timer::setInterval(struct timespec interval) {
-		bool r;
-		r = running();
 		Timer_doSetInterval(this, interval);
-		if (!dispatching && running() != r) {
-			if (onEventsChange != nullptr) onEventsChange(*this, r ? Events::in : Events::none);
-		}
 	}
 	void Timer::setInterval(uint64_t interval_ms) {
-		bool r;
-		r = running();
 		Timer_doSetInterval(this, interval_ms);
-		if (!dispatching && running() != r) {
-			if (onEventsChange != nullptr) onEventsChange(*this, r ? Events::in : Events::none);
-		}
-	}
-	void Timer::init(int handle, struct timespec interval) {
-		FD::init(handle);
-		Timer_doinit(this);
-		setInterval(interval);
-	}
-	void Timer::init(int handle, uint64_t interval_ms) {
-		FD::init(handle);
-		Timer_doinit(this);
-		setInterval(interval_ms);
 	}
 	void Timer::init(struct timespec interval) {
 		FD::init(timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK));
-		Timer_doinit(this);
 		setInterval(interval);
 	}
 	void Timer::init(uint64_t interval_ms) {
 		FD::init(timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK));
-		Timer_doinit(this);
 		setInterval(interval_ms);
 	}
-	Timer::Timer(int handle, uint64_t interval_ms) {
-		this->interval= {0,0};
-		init(handle, interval_ms);
+	void Timer::init(int handle) {
+		FD::init(handle);
+		struct itimerspec tmp;
+		timerfd_gettime(handle, &tmp);
+		interval = tmp.it_interval;
 	}
-	Timer::Timer(int handle, struct timespec interval) {
-		this->interval= {0,0};
-		init(handle, interval);
+	Timer::Timer(int handle) {
+		init(handle);
 	}
 	Timer::Timer(uint64_t interval_ms) {
-		this->interval= {0,0};
 		init(interval_ms);
 	}
 	Timer::Timer(struct timespec interval) {
-		this->interval= {0,0};
 		init(interval);
 	}
 	struct timespec Timer::getInterval() {
@@ -895,53 +940,23 @@ namespace CP
 	void Timer::setCallback(const Callback& cb) {
 		this->cb = cb;
 	}
-	bool Timer::dispatch(Events event, const EventData& evtd, bool confident) {
-		if (event == Events::in) {
-			dispatching = true;
-			//bool r = running();
+	void Timer::dispatch(int& events) {
+		if (events & EPOLLIN) {
 			uint64_t tmp;
-			bool d(false);
-			this->deletionFlag = &d;
-			int i;
-			if ((i = read(handle, &tmp, sizeof(tmp))) >= (int) sizeof(tmp) && cb != nullptr)
+			int i = read(fd, &tmp, sizeof(tmp));
+			if(i >= (int) sizeof(tmp) && cb != nullptr)
 				cb((int) tmp);
-			else if (i < 0 && isWouldBlock()) {
-				this->deletionFlag = NULL;
-				dispatching = false;
-				return false;
-			}
-			if (d) return true;
-			dispatching = false;
-			deletionFlag = NULL;
-			return true;
 		}
-		return true;
-	}
-	void Timer::init(int handle) {
-		FD::init(handle);
-		struct itimerspec tmp;
-		timerfd_gettime(handle, &tmp);
-		interval = tmp.it_interval;
-		if (running() && onEventsChange != nullptr) onEventsChange(*this, Events::none);
-	}
-	Timer::Timer(int handle) {
-		init(handle);
 	}
 	void Timer::close() {
-		if (onClose != nullptr) onClose(*this);
-		::close(handle);
-		handle = -1;
-		deinit();
+		::close(fd);
+		fd = -1;
 	}
 	Timer::~Timer() {
-		if (deletionFlag != NULL) *deletionFlag = true;
-		if (handle < 0) return;
+		if (fd < 0) return;
 		close();
 	}
-	Events Timer::getEvents() {
-		return running() ? Events::in : Events::none;
-	}
-
+/*
 //EventFD
 	EventFD::EventFD(int handle) :
 			File(handle) {
@@ -1018,6 +1033,7 @@ namespace CP
 		for(int i=0; i<currCycleNotificationsCount; i++) {
 			if(currCycleNotifications[i].data.ptr == (void*) &fd) {
 				currCycleNotifications[i].data.ptr = nullptr;
+				currCycleNotifications[i].events = 0;
 			}
 		}
 		// ...then remove fd from epoll
@@ -1031,7 +1047,8 @@ namespace CP
 		for(int i=0; i<currCycleNotificationsCount; i++) {
 			if(currCycleNotifications[i].data.ptr != nullptr) {
 				FD* inst = (FD*) currCycleNotifications[i].data.ptr;
-				inst->dispatch(currCycleNotifications[i].events);
+				auto* evts = &currCycleNotifications[i].events;
+				inst->dispatch(*(int*)evts);
 			}
 		}
 		currCycleNotificationsCount = 0;
@@ -1040,7 +1057,7 @@ namespace CP
 		while(true)
 			run(-1);
 	}
-	void EPoll::dispatch(int events) {
+	void EPoll::dispatch(int& events) {
 		run(0);
 	}
 
