@@ -15,6 +15,9 @@
 #include <cpoll-ng/cpoll.H>
 #include <unistd.h>
 #include <fcntl.h>
+#include <poll.h>
+#include <sys/signalfd.h>
+#include <sys/eventfd.h>
 #include <stdexcept>
 #include <dirent.h>
 #include <sys/socket.h>
@@ -25,6 +28,8 @@
 #include <sys/uio.h>
 #include <assert.h>
 #include <signal.h>
+#include <sys/sendfile.h>
+
 
 namespace CP
 {
@@ -69,6 +74,14 @@ namespace CP
 		this->fd = fd;
 		setBlocking(false);
 	}
+	void FD::setBlocking(bool b) {
+		int f = fcntl(fd, F_GETFL);
+		if (b && (f & O_NONBLOCK)) {
+			fcntl(fd, F_SETFL, f & ~O_NONBLOCK);
+		} else if (!b && (f & O_NONBLOCK) == 0) {
+			fcntl(fd, F_SETFL, f | O_NONBLOCK);
+		}
+	}
 
 	static inline bool isWouldBlock() {
 		return errno == EWOULDBLOCK || errno == EAGAIN;
@@ -104,6 +117,11 @@ namespace CP
 	int32_t File::recv(void* buf, int32_t len, int32_t flags) {
 		return ::recv(fd, buf, len, flags);
 	}
+	int32_t File::sendFileFrom(int fd, int64_t offset, int32_t len) {
+		off_t off = (off_t) offset;
+		return (int32_t) sendfile(this->fd, fd, offset < 0 ? nullptr : &off, (size_t) len);
+	}
+
 	File::OperationResult File::doOperation(OperationInfo& op, bool isWrite, bool hup) {
 		int r = -1;
 		auto& rwInfo = op.info.readWrite;
@@ -1086,5 +1104,20 @@ namespace CP
 		}
 		return NULL;
 	}
+
+
+	static void* threadFunc(void* v) {
+		auto* func = (function<void()>*)v;
+		(*func)();
+		delete func;
+		return nullptr;
+	}
+	pthread_t createThread(const function<void()>& func) {
+		auto* funcCopy = new function<void()>(func);
+		pthread_t pth;
+		assert(pthread_create(&pth, nullptr, &threadFunc, funcCopy) >= 0);
+		return pth;
+	}
+
 }
 

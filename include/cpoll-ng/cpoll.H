@@ -22,22 +22,8 @@
 #define __INCLUDED_CPOLL_H
 #include <cpoll-ng/exceptions.H>
 #include <cpoll-ng/ipaddress.H>
-#include <string>
-#include <memory>
-#include <exception>
-#include <vector>
 #include <functional>
-#include <limits>
-#include <poll.h>
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/un.h>
-#include <sys/signalfd.h>
-#include <sys/eventfd.h>
 #include <sys/epoll.h>
-#include <fcntl.h>
-#include <math.h>
-#include <sys/sendfile.h>
 
 #ifndef WARNLEVEL
 #define WARNLEVEL 5
@@ -142,7 +128,7 @@ namespace CP
 			} readWriteV;
 
 			struct {
-				eventfd_t evt;
+				uint64_t evt;
 			} eventfd;
 
 			struct {
@@ -179,14 +165,7 @@ namespace CP
 		// may change.
 		virtual void dispatch(int& events)=0;
 
-		void setBlocking(bool b) {
-			int f = fcntl(fd, F_GETFL);
-			if (b && (f & O_NONBLOCK)) {
-				fcntl(fd, F_SETFL, f & ~O_NONBLOCK);
-			} else if (!b && (f & O_NONBLOCK) == 0) {
-				fcntl(fd, F_SETFL, f | O_NONBLOCK);
-			}
-		}
+		void setBlocking(bool b);
 		~FD();
 	};
 	class File: public FD
@@ -266,10 +245,7 @@ namespace CP
 
 		// all integers representing on-disk offsets and lengths are 64 bit;
 		// integers representing in-memory offsets and lengths are 32 bit.
-		int32_t sendFileFrom(int fd, int64_t offset, int32_t len) {
-			off_t off = (off_t) offset;
-			return (int32_t) sendfile(this->fd, fd, offset < 0 ? nullptr : &off, (size_t) len);
-		}
+		int32_t sendFileFrom(int fd, int64_t offset, int32_t len);
 
 		void sendFileFrom(int fd, int64_t offset, int32_t len, const Callback& cb, bool repeat = false);
 		void repeatSendFileFrom(int fd, int64_t offset, int32_t len, const Callback& cb) {
@@ -468,6 +444,7 @@ namespace CP
 		void unlock() override;
 	};
 
+	pthread_t createThread(const function<void()>& func);
 }
 static unsigned long sdbm(uint8_t* str, int len) {
 	unsigned long hash = 0;
