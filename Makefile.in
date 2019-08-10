@@ -1,15 +1,18 @@
-CXX = @CXX@ @CXXFLAGS@ --std=c++0x -fPIC -fwrapv -fno-delete-null-pointer-checks -funsigned-char -fno-strict-aliasing -Wno-pmf-conversions -Iinclude
+CXX = @CXX@ @CXXFLAGS@ --std=c++0x -fPIC -fwrapv -fno-delete-null-pointer-checks -funsigned-char -Iinclude
 LDFLAGS := @LDFLAGS@ -lpthread
 INSTALL_LIBDIR = @prefix@@libdir@
 INSTALL_INCLUDEDIR = @prefix@@includedir@
 
-all: libcpoll-ng.so
+all: libcpoll-ng.so libcpoll-ng.a
 
 %.o: %.C
 	$(CXX) -c $(CC_FLAGS) $< -o $@
 
 libcpoll-ng.so: cpoll.o ipaddress.o exceptions.o
 	$(CXX) -o $@ --shared $^ $(LDFLAGS)
+
+libcpoll-ng.a: cpoll.o ipaddress.o exceptions.o
+	ar rcsT $@ $^
 
 install: libcpoll-ng.so
 	# headers
@@ -19,4 +22,4 @@ install: libcpoll-ng.so
 	install -s libcpoll-ng.so $(INSTALL_LIBDIR)/
 
 clean:
-	rm -f *.so *.o
+	rm -f *.so *.o *.a

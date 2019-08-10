@@ -1,4 +1,4 @@
-CXX = @CXX@ @CXXFLAGS@ -I../include --std=c++0x -fPIC -fwrapv -fno-delete-null-pointer-checks -funsigned-char -fno-strict-aliasing -Wno-pmf-conversions -Iinclude
+CXX = @CXX@ @CXXFLAGS@ -I../include --std=c++0x -fPIC -fwrapv -fno-delete-null-pointer-checks -funsigned-char -Iinclude
 LDFLAGS := @LDFLAGS@ -lpthread
 CPOLL_DIR := ..
 

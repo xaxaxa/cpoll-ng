@@ -5,3 +5,4 @@ config.status
 configure
 *.so
 *.o
+*.a
