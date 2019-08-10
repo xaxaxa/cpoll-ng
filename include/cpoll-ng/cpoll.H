@@ -445,6 +445,7 @@ namespace CP
 	};
 
 	pthread_t createThread(const function<void()>& func);
+	void listDirectory(const char* path, function<void(const char*)> cb);
 }
 static unsigned long sdbm(uint8_t* str, int len) {
 	unsigned long hash = 0;

@@ -1119,5 +1119,20 @@ namespace CP
 		return pth;
 	}
 
+	void listDirectory(const char* path, function<void(const char*)> cb) {
+		DIR* d = opendir(path);
+		if (d == NULL) {
+			throw UNIXException(errno, path);
+			return;
+		}
+		int len = offsetof(dirent, d_name) + pathconf(path, _PC_NAME_MAX) + 1;
+		char ent[len];
+		dirent* ent1 = (dirent*) ent;
+		while (readdir_r(d, (dirent*) ent, &ent1) == 0 && ent1 != NULL) {
+			if (strcmp(ent1->d_name, ".") == 0 || strcmp(ent1->d_name, "..") == 0) continue;
+			cb(ent1->d_name);
+		}
+		closedir(d);
+	}
 }
 
