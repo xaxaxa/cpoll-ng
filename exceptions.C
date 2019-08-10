@@ -1,5 +1,6 @@
 #include <cpoll-ng/exceptions.H>
 #include <string.h>
+#include <errno.h>
 
 namespace CP {
 	//CPollException
