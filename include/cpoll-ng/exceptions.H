@@ -1,8 +1,8 @@
 #include <stdexcept>
 #include <string>
-using namespace std;
 namespace CP
 {
+	using std::string;
 	class CPollException: public std::exception
 	{
 	public:

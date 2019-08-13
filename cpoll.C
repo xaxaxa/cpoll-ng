@@ -30,6 +30,7 @@
 #include <signal.h>
 #include <sys/sendfile.h>
 
+using namespace std;
 
 namespace CP
 {

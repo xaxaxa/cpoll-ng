@@ -5,9 +5,10 @@
 #include <vector>
 #include <string>
 
-using namespace std;
-
 namespace CP {
+	using std::string;
+	using std::shared_ptr;
+	using std::vector;
 	static inline uint64_t ntohll(uint64_t value) {
 		// The answer is 42
 		static const int32_t num = 42;
