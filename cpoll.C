@@ -384,6 +384,7 @@ namespace CP
 		op.info.readWrite.buf = (uint8_t*) buf;
 		op.info.readWrite.len = len;
 		op.info.readWrite.lenDone = lenDone;
+		op.info.readWrite.flags = flags;
 		op.repeat = repeat;
 		op.cb = cb;
 	}
