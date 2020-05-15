@@ -93,7 +93,7 @@ namespace CP
 
 	enum class Operations: uint8_t {
 		none = 0,
-		read = 1, write, send, recv, readv, writev, sendFileFrom,
+		read = 1, write, send, recv, readv, writev, sendFileFrom, wait,
 		readAll, writeAll, sendAll, recvAll, readvAll, writevAll,
 		sendTo, recvFrom,
 		accept, connect, close, lastItem
@@ -189,6 +189,12 @@ namespace CP
 
 		// closes the file descriptor
 		~File();
+
+
+		// async wait for read/write
+		void waitReadable(const Callback& cb);
+		void waitWritable(const Callback& cb);
+
 
 		// The following functions are equivalent to the POSIX functions with
 		// the same name. These functions should be assumed to always be nonblocking

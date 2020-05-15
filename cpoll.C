@@ -135,7 +135,7 @@ namespace CP
 		op.skipSynchronousAttempt = false;
 
 		// ordinary read/write/send/recv/readv/writev
-		if(op.operation >= Operations::read && op.operation <= Operations::sendFileFrom) {
+		if(op.operation >= Operations::read && op.operation <= Operations::wait) {
 			int myLen = 0;
 		repeat1:
 			switch (op.operation) {
@@ -160,6 +160,9 @@ namespace CP
 			case Operations::sendFileFrom:
 				r = sendFileFrom(sfInfo.fd, sfInfo.offset, sfInfo.len);
 				myLen = sfInfo.len;
+				break;
+			case Operations::wait:
+				r = 0;
 				break;
 			default: assert(false);
 			}
@@ -387,6 +390,19 @@ namespace CP
 		op.info.readWrite.flags = flags;
 		op.repeat = repeat;
 		op.cb = cb;
+	}
+
+	void File::waitReadable(const Callback& cb) {
+		OperationInfo& op = pendingOps[0];
+		if(op.operation != Operations::none)
+			throw logic_error("this FD or file is already reading");
+		addRWOp(op, Operations::wait, cb, nullptr, 0, 0, 0, false);
+	}
+	void File::waitWritable(const Callback& cb) {
+		OperationInfo& op = pendingOps[1];
+		if(op.operation != Operations::none)
+			throw logic_error("this FD or file is already writing");
+		addRWOp(op, Operations::wait, cb, nullptr, 0, 0, 0, false);
 	}
 
 	void File::read(void* buf, int32_t len, const Callback& cb, bool repeat) {
@@ -809,6 +825,40 @@ namespace CP
 		}
 		throw CPollException("no reachable hosts were found; last error: " + string(strerror(errno)));
 	}
+	
+	void Socket::connect(const char* hostname, const char* port, const Callback& cb,
+			int32_t family, int32_t socktype, int32_t proto, int32_t flags) {
+
+		OperationInfo& op = pendingOps[1];
+		if(op.operation != Operations::none)
+			throw logic_error("this FD or file is already writing");
+
+		if (fd != -1) throw CPollException(
+				"Socket::connect(string, ...) creates a socket, but the socket is already initialized");
+		auto hosts = EndPoint::lookupHost(hostname, port, 0, socktype, proto);
+		for (int i = 0; i < hosts.size(); i++) {
+			int sock = socket(hosts[i]->addressFamily, socktype | SOCK_CLOEXEC | SOCK_NONBLOCK, proto);
+			if (sock < 0) continue;
+			int size = hosts[i]->getSockAddrSize();
+			uint8_t tmp[size];
+			hosts[i]->getSockAddr((sockaddr*) tmp);
+			int r = ::connect(sock, (sockaddr*) tmp, size);
+			if(r >= 0) {
+				init(sock);
+				cb(r);
+				return;
+			}
+			if(errno == EINPROGRESS) {
+				init(sock);
+				op.operation = Operations::connect;
+				op.repeat = false;
+				op.cb = cb;
+				return;
+			}
+			::close(sock);
+		}
+		throw CPollException("no reachable hosts were found; last error: " + string(strerror(errno)));
+	}
 
 	int Socket::accept() {
 		int h = ::accept4(fd, NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK);
@@ -847,10 +897,10 @@ namespace CP
 		op.repeat = repeat;
 		op.cb = cb;
 	}
-	/*int32_t Socket::recvFrom(void* buf, int32_t len, int32_t flags, EndPoint& ep) {
+	int32_t Socket::recvFrom(void* buf, int32_t len, int32_t flags, EndPoint& ep) {
 		socklen_t size = ep.getSockAddrSize();
 		uint8_t addr[size];
-		int tmp = recvfrom(handle, buf, len, flags, (sockaddr*) addr, &size);
+		int tmp = recvfrom(fd, buf, len, flags, (sockaddr*) addr, &size);
 		if (tmp >= 0) ep.setSockAddr((sockaddr*) addr);
 		return tmp;
 	}
@@ -858,11 +908,20 @@ namespace CP
 		socklen_t size = ep.getSockAddrSize();
 		uint8_t addr[size];
 		ep.getSockAddr((sockaddr*) addr);
-		int tmp = sendto(handle, buf, len, flags, (sockaddr*) addr, size);
+		int tmp = ::sendto(fd, buf, len, flags, (sockaddr*) addr, size);
 		return tmp;
 	}
-	void Socket::recvFrom(void* buf, int32_t len, int32_t flags, EndPoint& ep, const Callback& cb,
+	/*void Socket::recvFrom(void* buf, int32_t len, int32_t flags, EndPoint& ep, const Callback& cb,
 			bool repeat) {
+		OperationInfo& op = pendingOps[0];
+		if(op.operation != Operations::none)
+			throw logic_error("recvFrom(): this socket is already reading");
+		if(File_tryOperation<decltype(&::recvfrom), &::recvfrom>(cb, repeat, fd, buf, len, flags, ))
+			return;
+		op.operation = Operations::accept;
+		op.repeat = repeat;
+		op.cb = cb;
+
 		static const Events e = Events::in;
 		EventHandlerData* ed = beginAddEvent(e);
 		fillIOEventHandlerData(ed, buf, len, cb, e, Operations::recvFrom);

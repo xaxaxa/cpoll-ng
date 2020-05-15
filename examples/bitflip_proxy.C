@@ -5,6 +5,7 @@
 //name is wrong; it does bitshift not bitflip
 
 using namespace CP;
+using namespace std;
 
 static const int bufSize=4096;
 
